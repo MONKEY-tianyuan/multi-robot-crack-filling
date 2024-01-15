@@ -10,8 +10,13 @@ import math
 import shapely
 import geopandas as gd
 from shapely import buffer,Point,LineString,MultiPolygon
+from shapely.geometry.multilinestring import MultiLineString
+from shapely.geometry import Polygon
 
-from link import Link
+from utils import *
+
+from scipy.spatial import KDTree
+
 
 class Crack_Graph():
     def __init__(self,
@@ -20,10 +25,15 @@ class Crack_Graph():
         super(Crack_Graph,self).__init__()
         self.botD = 48
         self.footD=7
-        self.sensD = 4.5*12
+        self.sensD = 2.5*12
+        self.W = 3500
+        self.H = 4000
+        
         self.r1 = self.inpxMap(self.botD/2)
         self.a = self.inpxMap(self.footD/2)
         self.s = self.inpxMap(self.sensD/2)
+
+        self.workSpace = Polygon([[0,0],[self.W,0],[self.W,self.H],[0,self.H]])
 
         self.image = cv2.imread(path,cv2.IMREAD_GRAYSCALE)
         self.skeleton = None
@@ -45,33 +55,197 @@ class Crack_Graph():
         self.Node_Order_list = []
 
         self.Node_set = None
+        self.NodeCan_set = None
+        self.NodeRed_set = None
         self.Polybuffer = None
+        self.Polybuffer_gd = None
+        self.overlap_block = []
+        self.endNodes = []
+        
+        self.vertice = []
+        self.vgNE = []
+        self.vgEE = []
+        self.visibility = []
+        self.edgeList = []
+        
+        self.objCrack = Polygon()
+        self.scanSpace = None
+        
+    def run(self):
+        
+        self.partition_crack()
+        self.crack_fill_radius_init(self.Line_list)
+        self.acute_angle_process(self.Partial_Crack_list)
+        self.acute_angle_update_list()
+        self.connect_Crack_Graph()
+        self.acute_angle_process(self.Partial_Crack_list)
+        self.endpoint_reduce()
+        self.Minkows_sum()
+        self.search_overlap()
+        self.endpoint_shorten()
+        self.visibility_graph()
+        self.poly_edges()
+        return self.NodeRed_set, self.edgeList , self.objCrack, self.scanSpace
+    
+    def poly_edges(self):
+        for edges in self.vgNE:
+            for line in edges:
+                self.objCrack = self.objCrack.union(buffer(LineString(line.reshape([-1,2])),self.s))
+        self.scanSpace = self.workSpace-self.objCrack
+                
+                
+    def visibility_graph(self):
+        for ind,poly in enumerate(self.Polybuffer):
+            in_logi = np.asarray([poly.contains(Point(node)) for node in self.NodeRed_set])
+            vertice_tmp = Vertice(inpoly_ind=np.where(in_logi)[0],node_set=self.NodeRed_set)
 
+            link_tmp = np.concatenate([self.link.x[ind].reshape([-1,1]),self.link.y[ind].reshape([-1,1])],axis=1)
+            mem = [np.where((link_tmp==node).all(axis=1))[0].size!=0   for node in vertice_tmp.node_pos]
+            kdt = KDTree(link_tmp)
+            d,_=np.array(kdt.query(vertice_tmp.node_pos))
+            d = [x<self.a for x in d]
+            mem = [m or x for m,x in zip(mem,d)]
+            ind_mem = np.where(mem)[0]
+            inpoly_ind = np.asarray([vertice_tmp.inpoly_ind[a] for a in ind_mem]).reshape([-1,1])
+            node_pos = np.asarray([vertice_tmp.node_pos[a] for a in ind_mem]).reshape([-1,2])
+            vertice_arr_tmp = np.concatenate([inpoly_ind,node_pos],axis=1)
+            
+            _,ind_dis = np.array(kdt.query(node_pos))
+            vertice_arr_tmp = np.concatenate([ind_dis.reshape([-1,1]),vertice_arr_tmp],axis=1)
+            vertice_arr_tmp = vertice_arr_tmp[vertice_arr_tmp[:,0].argsort()]
+            S_NE = []
+            S_EE = []
+            if vertice_arr_tmp.shape[0] > 1:
+                for i in range(vertice_arr_tmp.shape[0]-1):
+                    S_NE.append(np.concatenate([vertice_arr_tmp[i,-2:],vertice_arr_tmp[i+1,-2:]]))
+                    S_EE.append(np.array([vertice_arr_tmp[i,1],vertice_arr_tmp[i+1,1]]))
+                    
+            S_NE = np.asarray(S_NE)
+            S_EE = np.asarray(S_EE)       
+        
+            if type(poly.boundary) is MultiLineString:
+                mem1 = d
+                ind_mem1 = np.where(mem1)[0]
+                inpoly_ind1 = np.asarray([vertice_tmp.inpoly_ind[a] for a in ind_mem1]).reshape([-1,1])
+                node_pos1 = np.asarray([vertice_tmp.node_pos[a] for a in ind_mem1]).reshape([-1,2])
+                vertice_arr_tmp1 = np.concatenate([inpoly_ind1,node_pos1],axis=1)
+            
+                _,ind_dis1 = np.array(kdt.query(node_pos1))
+                vertice_arr_tmp1 = np.concatenate([ind_dis1.reshape([-1,1]),vertice_arr_tmp1],axis=1)
+                vertice_arr_tmp1 = vertice_arr_tmp1[vertice_arr_tmp1[:,0].argsort()]
+
+                if vertice_arr_tmp1.shape[0] > 1:
+                    for i in range(vertice_arr_tmp1.shape[0]-1):
+                        NE_tmp1 = np.concatenate([vertice_arr_tmp1[i,-2:],vertice_arr_tmp1[i+1,-2:]])
+                        EE_tmp1 = np.array([vertice_arr_tmp1[i,1],vertice_arr_tmp1[i+1,1]])
+                        S_NE = np.concatenate([S_NE,NE_tmp1],axis=0)
+                        S_EE = np.concatenate([S_EE,EE_tmp1],axis=0)
+            
+            not_mem = [not m for m in mem]
+            ind_not_mem = np.where(not_mem)[0]
+            inpoly_ind2 = np.asarray([vertice_tmp.inpoly_ind[a] for a in ind_not_mem]).reshape([-1,1])
+            node_pos2 = np.asarray([vertice_tmp.node_pos[a] for a in ind_not_mem]).reshape([-1,2])
+            _,ind_dis2 = np.array(kdt.query(node_pos2))
+            node_pos2_tmp = np.asarray([vertice_arr_tmp[a,-2:] for a in ind_dis2]).reshape([-1,2])
+            inpoly_ind2_tmp = np.asarray([vertice_arr_tmp[a,1] for a in ind_dis2]).reshape([-1,1])
+            NE_tmp2 = np.concatenate([node_pos2,node_pos2_tmp],axis=1)
+            EE_tmp2 = np.concatenate([inpoly_ind2,inpoly_ind2_tmp],axis=1)
+            
+            S_NE = np.concatenate([S_NE,NE_tmp2],axis=0)
+            S_EE = np.concatenate([S_EE,EE_tmp2],axis=0)
+                 
+            self.vertice.append(vertice_tmp)
+            self.vgNE.append(S_NE)
+            self.vgEE.append(S_EE)
+            
+        for ind,poly in enumerate(self.Polybuffer):
+            vis = Visbility()
+            vis.visibility,vis.inter,vis.outer = line_of_sight2(obsv_node=self.vgNE[ind][:,:2],
+                                                                    tgt_node=self.vgNE[ind][:,2:],
+                                                                    ext_poly=poly)
+            for j,node_vis in enumerate(vis.visibility):
+                if not node_vis:
+                    start = self.vgNE[ind][j,:2]
+                    goal = self.vgNE[ind][j,2:]
+                    startn = self.vgEE[ind][j,0]
+                    goaln = self.vgEE[ind][j,1]
+                    slen = self.NodeRed_set.shape[0]
+                    waypoint,dist = pathfinder(start,goal,poly)
+                    nn = waypoint[1:-1]
+                    self.NodeRed_set = np.concatenate([self.NodeRed_set,nn],axis=0)
+                    
+                    if nn.size != 0:
+                        self.vgNE[ind] = np.concatenate([self.vgNE[ind],np.concatenate([start,nn[0]]).reshape([-1,4])],axis=0)
+                        self.vgEE[ind] = np.concatenate([self.vgEE[ind],np.array([startn,slen]).reshape([-1,2])],axis=0)
+                        
+                        if nn.shape[0]>1:
+                            for k in range(1,nn.shape[0]):
+                                self.vgNE[ind] = np.concatenate([self.vgNE[ind],np.concatenate([self.vgNE[ind][-1,2:],nn[k]]).reshape([-1,4])],axis=0)
+                                self.vgEE[ind] = np.concatenate([self.vgEE[ind],np.array([self.vgEE[ind][-1,1],slen+k]).reshape([-1,2])],axis=0)
+                        
+                        self.vgNE[ind] = np.concatenate([self.vgNE[ind],np.concatenate([self.vgNE[ind][-1,2:],goal]).reshape([-1,4])],axis=0)
+                        self.vgEE[ind] = np.concatenate([self.vgEE[ind],np.array([self.vgEE[ind][-1,1],goaln]).reshape([-1,2])],axis=0)
+                    else:
+                        self.vgNE[ind] = np.concatenate([self.vgNE[ind],np.concatenate([start,goal]).reshape([-1,4])],axis=0)
+                        self.vgEE[ind] = np.concatenate([self.vgEE[ind],np.array([startn,goaln]).reshape([-1,2])],axis=0)
+            
+            self.vgNE[ind] = np.delete(self.vgNE[ind],np.where(vis.visibility==False)[0],axis=0)  
+            self.vgEE[ind] = np.delete(self.vgEE[ind],np.where(vis.visibility==False)[0],axis=0)
+        
+        
+
+                    
+                    
+    
+    def endpoint_shorten(self):
+        for ind,node in enumerate(self.NodeRed_set):
+            aRan = shapely.buffer(Point(node),self.a/np.sqrt(2))
+            logi_cell = [shapely.intersects(aRan,LineString(partial_crack)) for partial_crack in self.Partial_Crack_list]
+            if np.sum(logi_cell)==1:
+                crack_tmp = self.Partial_Crack_list[np.where(np.asarray(logi_cell)==True)[0][0]]
+                endP_int_logi = np.asarray([shapely.intersects(aRan,Point(crack_tmp[0])), shapely.intersects(aRan,Point(crack_tmp[-1]))])
+                if np.any(endP_int_logi):
+                    int_poly = shapely.intersection(aRan,LineString(crack_tmp))
+                    ext_poly = LineString(crack_tmp) - int_poly
+                    ext_poly = ext_poly.xy
+                    ext_poly = np.concatenate([np.asarray(ext_poly[0]).reshape([-1,1]),np.asarray(ext_poly[1]).reshape([-1,1])],axis=1)
+                    if len(int_poly.xy[0])!=0:
+                        self.Partial_Crack_list[np.where(np.asarray(logi_cell)==True)[0][0]] = ext_poly
+                        ee = np.concatenate([crack_tmp[0].reshape([-1,2]),crack_tmp[-1].reshape([-1,2])],axis=0)
+                        ddd = np.argmin(self.spdist(node,ee))
+                        self.NodeRed_set[ind] = ee[ddd]
+                
+    
     def search_overlap(self):
-        num_partial_crack = len(self.Partial_Crack_list)
-        overlap_mat = np.zeros([num_partial_crack,num_partial_crack])
+        #num_partial_crack = len(self.Partial_Crack_list)
         overlap_idx_pair = []
-        overlap_area = []
+        inter_centernode_list = []
+        #inter_overlapnum_list = []
 
-        for ind1,geom1 in enumerate(self.Polybuffer.geometry):
-            for ind2,geom2 in enumerate(self.Polybuffer.geometry):
+        for ind1,geom1 in enumerate(self.Polybuffer_gd.geometry):
+            for ind2,geom2 in enumerate(self.Polybuffer_gd.geometry):
                 if ind2>ind1:
                     overlaps = geom1.overlaps(geom2)
 
                     if overlaps:
                         overlap_idx_pair.append([ind1,ind2])
 
+        if len(overlap_idx_pair) != 0:
+            for pair in (overlap_idx_pair):
+                overlap_area_tmp = self.Polybuffer_gd.geometry[pair[0]].intersection(self.Polybuffer_gd.geometry[pair[1]])
+                overlap_block_tmp = GeoBlock(Poly=overlap_area_tmp,idx = pair)
+                self.overlap_block.append(overlap_block_tmp)
+                cx,cy = shapely.centroid(overlap_area_tmp).xy
+                inter_centernode_list.append([cx[0],cy[0]])
 
-        for pair in (overlap_idx_pair):
-            overlap_area_tmp = self.Polybuffer.geometry[pair[0]].intersection(self.Polybuffer.geometry[pair[1]])
-            overlap_area.append(overlap_area_tmp)
-            self.Polybuffer.geometry[pair[0]] -= overlap_area_tmp
-            self.Polybuffer.geometry[pair[1]] -= overlap_area_tmp
-        
-            self.Polybuffer = self.Polybuffer.union(overlap_area_tmp)
-            
-
-        print(1)
+            inter_centernode_list = np.asarray(inter_centernode_list,dtype=np.float64)
+            self.NodeCan_set = np.concatenate([inter_centernode_list,self.endNodes],axis=0)
+            self.NodeRed_set = self.NodeCan_set[0,:]
+            for nodecan in self.NodeCan_set:
+                if np.all(self.spdist(nodecan,self.NodeRed_set)>self.a):
+                    self.NodeRed_set = np.concatenate([self.NodeRed_set.reshape([-1,2]),nodecan.reshape([-1,2])],axis=0)
+        else:
+            self.NodeRed_set = copy.deepcopy(self.endNodes)
 
             
     def Minkows_sum(self):
@@ -84,12 +258,13 @@ class Crack_Graph():
             poly = poly.simplify(tolerance=1)
             Poly.append(poly)
 
-        self.Polybuffer = gd.GeoSeries(Poly)
+        self.Polybuffer = Poly
+        self.Polybuffer_gd = gd.GeoSeries(Poly)
 
     def endpoint_reduce(self):
         endPoints = copy.deepcopy(self.Node_set)
         tmp_endPoints = copy.deepcopy(self.Node_set)
-        endNodes = []
+        
         e = 0
         while tmp_endPoints.size!=0:
             endlogi = np.where((np.asarray(self.Node_list).reshape([-1,2])==tmp_endPoints[e]).all(axis=1),1,0).reshape([-1,2])
@@ -103,12 +278,10 @@ class Crack_Graph():
                     Testpoints = np.delete(Testpoints,del_idx_2,axis=0)
             
             if np.all(self.spdist(tmp_endPoints[e],Testpoints)>self.a):
-                endNodes.append(tmp_endPoints[e])
+                self.endNodes.append(tmp_endPoints[e])
                 
             tmp_endPoints = np.delete(tmp_endPoints,e,axis=0)
 
-        print(1)  
-   
 
     def connect_Crack_Graph(self):
         #connect the crack graph
@@ -178,7 +351,6 @@ class Crack_Graph():
                     tmp_Node_list[intt] = np.zeros_like(tmp_Node_list[intt])
                     intt2 = np.delete(intt2,intt2 == intt)
             
-            #print(1)
             if np.any(np.asarray(tmp_Node_list)):
                 continue
             else:
@@ -205,11 +377,7 @@ class Crack_Graph():
         
         self.Node_set = np.unique(np.asarray(self.Node_list).reshape([-1,2]),axis=1)
 
-            
 
-
-
-    
 
     def acute_angle_update_list(self):
         
@@ -220,6 +388,7 @@ class Crack_Graph():
             self.h_Node_Order_list.append(self.Node_Order_list[change_radius])
             self.h_fp.append(self.fp[change_radius])
 
+        for change_radius in self.det[::-1]:
             del self.Line_list[change_radius]
             del self.Partial_Crack_list[change_radius]
             del self.Node_list[change_radius]
@@ -270,14 +439,14 @@ class Crack_Graph():
                 self.fp[ind] = np.tan(ang) * self.a
                 self.det.append(ind)
 
-        return self.det
+        
 
 
     
     def crack_fill_radius_init(self,Line_list):
         line_num = len(Line_list)
         self.fp = self.a*np.ones([line_num])
-        return self.fp
+        
     
     def partition_crack(self):
         endpoints, intpoints = self.extract_vertice_and_edge()
@@ -413,8 +582,7 @@ class Crack_Graph():
                         
                         intpoints_diff = intpoints_diff.append([tmp_x,tmp_y])
                         detect_flag = 1
-                        Partial_Crack = []
-        
+                        Partial_Crack = []        
 
         for intpoint in intpoints:
             intpoint_list = np.delete(intpoint_list,np.where((intpoint_list==intpoint).all(axis=1))[0],0)
@@ -425,13 +593,8 @@ class Crack_Graph():
             start_id = np.where((self.Node_set==node[:2]).all(axis=1))[0]
             end_id = np.where((self.Node_set==node[2:]).all(axis=1))[0]
             self.Node_Order_list.append([start_id[0],end_id[0]])
-        
-        
 
         return Partial_Crack_list_diff
-
-
-            
 
     def extract_vertice_and_edge(self):
         # skeletonize the image
@@ -510,6 +673,25 @@ class Crack_Graph():
         intpoints = np.asarray(intpoints)
         return endpoints,intpoints
 
+    def line_of_sight(self,
+                      obsv_node,
+                      tgt_node,
+                      ext_poly):
+        visibility = np.ones([obsv_node.shape[0],1])
+        inter_set = []
+        outer_set = []
+        for i in range(obsv_node.shape[0]):
+            inter = shapely.intersection(ext_poly,LineString([obsv_node[i],tgt_node[i]]))
+            outer = LineString([obsv_node[i],tgt_node[i]])-inter
+            
+            inter_set.append(inter)
+            outer_set.append(outer)
+            
+            if len(outer.xy[0])!=0:
+                visibility[i] = 0
+        
+        return visibility,inter_set,outer_set
+        
 
 
     def conv2D(self,img,pos):
@@ -599,8 +781,8 @@ class Crack_Graph():
 
     @staticmethod
     def spdist(p,Ps):
-        p = np.asarray(p,dtype=np.float32)
-        Ps = np.asarray(Ps,dtype=np.float32)
+        p = np.asarray(p,dtype=np.float32).reshape([-1,2])
+        Ps = np.asarray(Ps,dtype=np.float32).reshape([-1,2])
         return np.sqrt(np.sum((p-Ps)**2,1))
         
     @staticmethod
@@ -609,7 +791,12 @@ class Crack_Graph():
     
     @staticmethod
     def totalLength(Ps):
-        return np.sqrt(np.sum(np.diff(Ps,axis=0)**2))
+        diff_dist_arr = diff_dist(Ps)
+        return np.sum(diff_dist_arr)
+
+    @staticmethod
+    def diff_dist(Ps):
+        return np.sqrt(np.sum(np.diff(Ps,axis=0)**2,axis=1))
     
     @staticmethod
     def inpxMap(x):
@@ -633,6 +820,3 @@ class Crack_Graph():
         img[np.ix_(range(x_left,x_right+1),range(y_left,y_right+1))] = value
         return img
     
-
-
-
