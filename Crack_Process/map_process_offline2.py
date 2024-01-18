@@ -9,11 +9,11 @@ image_path = os.path.join(intput_dir,'Uniform','myCrack6_90_2.png')
 
 #crack preprocessing
 crack_model = Crack_Graph(image_path)
-nodeList,edgeList,objCrack,scanSpace = crack_model.run()
+crack_nodeList,crack_edgeList,crack_edgeIndList,objCrack,scanSpace = crack_model.run()
 
 #morse decomposition and reeb decomposition
 reeb_decomp = Reeb_Decomp(scanSpace=scanSpace,objCrack = objCrack)
-reeb_decomp.morse_decomposition()
+critPt, reeb_edgeList, reeb_Cell=reeb_decomp.morse_decomposition()
 
 plt.figure(num=1)
 for partial_crack in crack_model.Partial_Crack_list:

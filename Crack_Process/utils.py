@@ -53,6 +53,39 @@ class Visbility():
         self.inter = inter
         self.outer = outer
 
+
+def shrink_or_swell_shapely_polygon(my_polygon, factor=0.10, swell=False):
+    ''' returns the shapely polygon which is smaller or bigger by passed factor.
+        If swell = True , then it returns bigger polygon, else smaller '''
+    from shapely import geometry
+
+    #my_polygon = mask2poly['geometry'][120]
+
+    shrink_factor = factor 
+    xs = list(my_polygon.exterior.coords.xy[0])
+    ys = list(my_polygon.exterior.coords.xy[1])
+    x_center = 0.5 * min(xs) + 0.5 * max(xs)
+    y_center = 0.5 * min(ys) + 0.5 * max(ys)
+    min_corner = geometry.Point(min(xs), min(ys))
+    max_corner = geometry.Point(max(xs), max(ys))
+    center = geometry.Point(x_center, y_center)
+    shrink_distance = center.distance(min_corner)*shrink_factor
+
+    if swell:
+        my_polygon_resized = my_polygon.buffer(shrink_distance) #expand
+    else:
+        my_polygon_resized = my_polygon.buffer(-shrink_distance) #shrink
+
+    # #visualize for debugging
+    # x, y = my_polygon.exterior.xy
+    # plt.plot(x,y)
+    # x, y = my_polygon_resized.exterior.xy
+    # plt.plot(x,y)
+    # # to net let the image be distorted along the axis
+    # plt.axis('equal')
+    # plt.show()    
+    
+    return my_polygon_resized
         
 def get_unique_element(list):
     unique = []
@@ -232,3 +265,5 @@ def set_value_block(img,p1,p2,
     img[np.ix_(range(x_left,x_right+1),range(y_left,y_right+1))] = value
     return img
 
+def point_loc_in_set(pt,P):
+    return np.where((P==pt).all(axis=1))[0]

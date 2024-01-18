@@ -25,7 +25,7 @@ class Crack_Graph():
         super(Crack_Graph,self).__init__()
         self.botD = 48
         self.footD=7
-        self.sensD = 2.5*12
+        self.sensD = 2*12
         self.W = 3500
         self.H = 4000
         
@@ -66,7 +66,8 @@ class Crack_Graph():
         self.vgNE = []
         self.vgEE = []
         self.visibility = []
-        self.edgeList = []
+        self.edgeList = None
+        self.edgeIndList = None
         
         self.objCrack = Polygon()
         self.scanSpace = None
@@ -85,7 +86,7 @@ class Crack_Graph():
         self.endpoint_shorten()
         self.visibility_graph()
         self.poly_edges()
-        return self.NodeRed_set, self.edgeList , self.objCrack, self.scanSpace
+        return self.NodeRed_set, self.edgeList , self.edgeIndList,self.objCrack, self.scanSpace
     
     def poly_edges(self):
         for edges in self.vgNE:
@@ -192,6 +193,13 @@ class Crack_Graph():
             self.vgNE[ind] = np.delete(self.vgNE[ind],np.where(vis.visibility==False)[0],axis=0)  
             self.vgEE[ind] = np.delete(self.vgEE[ind],np.where(vis.visibility==False)[0],axis=0)
         
+        self.edgeIndList = self.vgEE[0]
+        for i in range(1,len(self.vgEE)):
+            self.edgeIndList = np.concatenate([self.edgeIndList,self.vgEE[i]],axis=0)
+            
+        self.edgeList = self.vgNE[0]
+        for i in range(1,len(self.vgNE)):
+            self.edgeList = np.concatenate([self.edgeList,self.vgNE[i]],axis=0)
         
 
                     
